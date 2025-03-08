@@ -1,6 +1,8 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createReversePennyDrop, mockPayment, ReversePennyDropRequest, ReversePennyDropResponse } from '../api/setuApi'
+import ErrorDisplay from '../components/ErrorDisplay'
+import { parseApiError, extractSetuErrorCode, getSetuErrorMessage } from '../utils/errorUtils'
 
 const ReversePennyDrop = () => {
   const navigate = useNavigate()
@@ -25,7 +27,12 @@ const ReversePennyDrop = () => {
   })
   
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{
+    message: string;
+    code?: string;
+    title?: string;
+    suggestion?: string;
+  } | null>(null)
   const [result, setResult] = useState<ReversePennyDropResponse | null>(null)
   const [mockStatus, setMockStatus] = useState<{ success: boolean; message: string } | null>(null)
   
@@ -97,7 +104,17 @@ const ReversePennyDrop = () => {
       const response = await createReversePennyDrop(request)
       setResult(response)
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'An error occurred')
+      // Use our error parsing utility
+      const parsedError = parseApiError(err);
+      
+      // Check for Setu-specific error codes
+      const setuErrorCode = extractSetuErrorCode(err);
+      if (setuErrorCode) {
+        parsedError.message = getSetuErrorMessage(setuErrorCode);
+        parsedError.code = setuErrorCode;
+      }
+      
+      setError(parsedError);
     } finally {
       setLoading(false)
     }
@@ -116,13 +133,28 @@ const ReversePennyDrop = () => {
         message: `Mock payment ${status} successfully simulated`
       })
     } catch (err: any) {
+      // Use our error parsing utility for mock payment errors too
+      const parsedError = parseApiError(err);
       setMockStatus({
         success: false,
-        message: err.response?.data?.detail || err.message || 'Failed to simulate payment'
-      })
+        message: parsedError.message
+      });
     } finally {
       setLoading(false)
     }
+  }
+  
+  const handleRetry = () => {
+    setError(null);
+    // Focus on the account number input field
+    const accountInput = document.getElementById('accountNumber');
+    if (accountInput) {
+      accountInput.focus();
+    }
+  }
+  
+  const handleDismissError = () => {
+    setError(null);
   }
   
   if (!panVerified) {
@@ -256,10 +288,15 @@ const ReversePennyDrop = () => {
       </div>
       
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-md mb-8">
-          <h3 className="font-semibold mb-2">Error</h3>
-          <p>{error}</p>
-        </div>
+        <ErrorDisplay 
+          error={error.message}
+          title={error.title || 'Bank Account Verification Failed'}
+          errorCode={error.code}
+          variant="detailed"
+          onRetry={handleRetry}
+          onDismiss={handleDismissError}
+          suggestion={error.suggestion}
+        />
       )}
       
       {result && (
@@ -333,9 +370,38 @@ const ReversePennyDrop = () => {
       )}
       
       {mockStatus && (
-        <div className={`p-4 rounded-md mb-8 ${mockStatus.success ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-700'}`}>
-          <h3 className="font-semibold mb-2">Mock Payment Result</h3>
-          <p>{mockStatus.message}</p>
+        <div className={`p-5 rounded-lg mb-8 ${mockStatus.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+          <div className="flex items-start">
+            <div className="mr-4 flex-shrink-0">
+              {mockStatus.success ? (
+                <svg className="h-6 w-6 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="h-6 w-6 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+            </div>
+            <div>
+              <h3 className={`font-semibold mb-2 ${mockStatus.success ? 'text-green-800' : 'text-red-800'}`}>
+                {mockStatus.success ? 'Payment Successful' : 'Payment Failed'}
+              </h3>
+              <p className={mockStatus.success ? 'text-green-700' : 'text-red-700'}>
+                {mockStatus.message}
+              </p>
+              {mockStatus.success && (
+                <div className="mt-4">
+                  <button
+                    onClick={() => navigate('/')}
+                    className="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition"
+                  >
+                    Return to Home
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

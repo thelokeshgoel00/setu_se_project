@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Setu API base URL (sandbox or production)
     setu_base_url: str = os.getenv("SETU_BASE_URL", "https://dg-sandbox.setu.co")
     
+    # Database configuration
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./setu_api.db")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

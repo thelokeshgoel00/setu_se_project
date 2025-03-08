@@ -25,6 +25,12 @@ const Navbar = () => {
             >
               Start Verification
             </Link>
+            <Link 
+              to="/admin" 
+              className={`px-3 py-2 rounded hover:bg-blue-700 transition ${isActive('/admin')}`}
+            >
+              Admin
+            </Link>
           </div>
         </div>
       </div>

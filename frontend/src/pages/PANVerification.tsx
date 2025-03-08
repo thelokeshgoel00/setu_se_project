@@ -1,6 +1,8 @@
 import { useState, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { verifyPAN, PANVerificationRequest, PANVerificationResponse } from '../api/setuApi'
+import ErrorDisplay from '../components/ErrorDisplay'
+import { parseApiError, extractSetuErrorCode, getSetuErrorMessage } from '../utils/errorUtils'
 
 const PANVerification = () => {
   const navigate = useNavigate()
@@ -11,7 +13,12 @@ const PANVerification = () => {
   })
   
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{
+    message: string;
+    code?: string;
+    title?: string;
+    suggestion?: string;
+  } | null>(null)
   const [result, setResult] = useState<PANVerificationResponse | null>(null)
   
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -44,7 +51,17 @@ const PANVerification = () => {
       sessionStorage.setItem('panVerificationResult', JSON.stringify(response))
       sessionStorage.setItem('verifiedPAN', formData.pan)
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'An error occurred')
+      // Use our error parsing utility
+      const parsedError = parseApiError(err);
+      
+      // Check for Setu-specific error codes
+      const setuErrorCode = extractSetuErrorCode(err);
+      if (setuErrorCode) {
+        parsedError.message = getSetuErrorMessage(setuErrorCode);
+        parsedError.code = setuErrorCode;
+      }
+      
+      setError(parsedError);
     } finally {
       setLoading(false)
     }
@@ -52,6 +69,19 @@ const PANVerification = () => {
   
   const handleContinue = () => {
     navigate('/reverse-penny-drop')
+  }
+  
+  const handleRetry = () => {
+    setError(null);
+    // Focus on the PAN input field
+    const panInput = document.getElementById('pan');
+    if (panInput) {
+      panInput.focus();
+    }
+  }
+  
+  const handleDismissError = () => {
+    setError(null);
   }
   
   return (
@@ -127,10 +157,14 @@ const PANVerification = () => {
       </div>
       
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-md mb-8">
-          <h3 className="font-semibold mb-2">Error</h3>
-          <p>{error}</p>
-        </div>
+        <ErrorDisplay 
+          error={error.message}
+          title={error.title || 'PAN Verification Failed'}
+          errorCode={error.code}
+          variant="detailed"
+          onRetry={handleRetry}
+          onDismiss={handleDismissError}
+        />
       )}
       
       {result && (

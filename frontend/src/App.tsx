@@ -3,6 +3,7 @@ import Navbar from './components/Navbar'
 import Home from './pages/Home'
 import PANVerification from './pages/PANVerification'
 import ReversePennyDrop from './pages/ReversePennyDrop'
+import Admin from './pages/Admin'
 
 function App() {
   return (
@@ -13,6 +14,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/pan-verification" element={<PANVerification />} />
           <Route path="/reverse-penny-drop" element={<ReversePennyDrop />} />
+          <Route path="/admin" element={<Admin />} />
           {/* Redirect any other routes to home */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

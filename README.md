@@ -24,8 +24,12 @@ A FastAPI application that integrates with Setu APIs for PAN verification and re
    ```
    SETU_CLIENT_ID=your_client_id
    SETU_CLIENT_SECRET=your_client_secret
-   SETU_PRODUCT_INSTANCE_ID=your_product_instance_id
+   SETU_PRODUCT_INSTANCE_PAN_ID=your_product_instance_pan_id
+   SETU_PRODUCT_INSTANCE_RPD_ID=your_product_instance_rpd_id
    SETU_BASE_URL=https://dg-sandbox.setu.co  # Use https://dg.setu.co for production
+   
+   # Database Configuration (optional, defaults to SQLite)
+   DATABASE_URL=sqlite:///./setu_api.db
    ```
 
 ## Running the Application
@@ -53,7 +57,8 @@ You can run the application using Docker, which packages everything needed to ru
    ```
    SETU_CLIENT_ID=your_client_id
    SETU_CLIENT_SECRET=your_client_secret
-   SETU_PRODUCT_INSTANCE_ID=your_product_instance_id
+   SETU_PRODUCT_INSTANCE_PAN_ID=your_product_instance_pan_id
+   SETU_PRODUCT_INSTANCE_RPD_ID=your_product_instance_rpd_id
    SETU_BASE_URL=https://dg-sandbox.setu.co  # Use https://dg.setu.co for production
    ```
 
@@ -177,4 +182,26 @@ If you prefer to use Docker directly without Docker Compose:
 
 Interactive API documentation is available at:
 - Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc` 
+- ReDoc: `http://localhost:8000/redoc`
+
+## Database
+
+The application uses SQLite as the default database. All API requests and responses are stored in the database for record-keeping and auditing purposes.
+
+### Database Models
+
+- **PANVerification**: Stores PAN verification requests and responses
+- **ReversePennyDrop**: Stores reverse penny drop requests
+- **Payment**: Stores payment records related to reverse penny drops
+
+### Database Endpoints
+
+The following endpoints are available to query the database:
+
+- `GET /api/pan/history`: Get history of PAN verifications
+- `GET /api/rpd/history`: Get history of reverse penny drop requests
+- `GET /api/payments/history`: Get history of payments
+
+### Custom Database Configuration
+
+You can customize the database by setting the `DATABASE_URL` environment variable in your `.env` file. The default is SQLite, but you can use any database supported by SQLAlchemy. 
