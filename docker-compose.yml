@@ -1,0 +1,23 @@
+services:
+  setu-api-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"  # Backend API
+      - "5173:5173"  # Frontend
+    environment:
+      - SETU_CLIENT_ID=${SETU_CLIENT_ID}
+      - SETU_CLIENT_SECRET=${SETU_CLIENT_SECRET}
+      - SETU_BASE_URL=${SETU_BASE_URL}
+      - SETU_PRODUCT_INSTANCE_PAN_ID=${SETU_PRODUCT_INSTANCE_PAN_ID}
+      - SETU_PRODUCT_INSTANCE_RPD_ID=${SETU_PRODUCT_INSTANCE_RPD_ID}
+    volumes:
+      - ./.env:/app/.env
+    restart: unless-stopped
+    networks:
+      - setu-network
+
+networks:
+  setu-network:
+    driver: bridge 
