@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
 from dotenv import load_dotenv
+import secrets
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +22,11 @@ class Settings(BaseSettings):
     
     # Database configuration
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./setu_api.db")
+    
+    # JWT configuration
+    jwt_secret_key: str = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+    jwt_access_token_expire_minutes: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     
     class Config:
         env_file = ".env"

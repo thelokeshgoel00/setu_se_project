@@ -1,14 +1,22 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createReversePennyDrop, mockPayment, ReversePennyDropRequest, ReversePennyDropResponse } from '../api/setuApi'
+import { 
+  createReversePennyDrop, 
+  mockPayment, 
+  ReversePennyDropRequest, 
+  ReversePennyDropResponse,
+  ReversePennyDropErrorResponse 
+} from '../api/setuApi'
 import ErrorDisplay from '../components/ErrorDisplay'
 import { parseApiError, extractSetuErrorCode, getSetuErrorMessage } from '../utils/errorUtils'
+import { resetVerificationFlow } from '../utils/sessionUtils'
 
 const ReversePennyDrop = () => {
   const navigate = useNavigate()
   const [panVerified, setPanVerified] = useState(false)
   const [panDetails, setPanDetails] = useState<any>(null)
   const [verifiedPan, setVerifiedPan] = useState('')
+  const [flowTraceId, setFlowTraceId] = useState('')
   
   const [formData, setFormData] = useState<{
     accountNumber: string;
@@ -40,6 +48,7 @@ const ReversePennyDrop = () => {
   useEffect(() => {
     const panResult = sessionStorage.getItem('panVerificationResult')
     const pan = sessionStorage.getItem('verifiedPAN')
+    const traceId = sessionStorage.getItem('flowTraceId')
     
     if (panResult && pan) {
       try {
@@ -47,6 +56,17 @@ const ReversePennyDrop = () => {
         setPanDetails(parsedResult)
         setVerifiedPan(pan)
         setPanVerified(true)
+        
+        if (traceId) {
+          setFlowTraceId(traceId)
+        } else {
+          // If trace_id is missing, set an error
+          setError({
+            message: "Something went wrong with the verification flow. Missing trace ID.",
+            title: "Verification Error",
+            suggestion: "Please try the verification process again from the beginning."
+          })
+        }
         
         // Pre-fill account holder name if available
         if (parsedResult.data && parsedResult.data.full_name) {
@@ -58,6 +78,9 @@ const ReversePennyDrop = () => {
         }
       } catch (err) {
         console.error('Error parsing PAN verification result', err)
+        // Reset verification flow and redirect to PAN verification
+        resetVerificationFlow()
+        navigate('/pan-verification')
       }
     } else {
       // Redirect to PAN verification if not verified
@@ -77,6 +100,17 @@ const ReversePennyDrop = () => {
     setResult(null)
     setMockStatus(null)
     
+    // Check if we have a trace_id before proceeding
+    if (!flowTraceId) {
+      setLoading(false)
+      setError({
+        message: "Cannot proceed with bank verification. Missing trace ID.",
+        title: "Verification Error",
+        suggestion: "Please restart the verification process from the beginning."
+      })
+      return
+    }
+    
     try {
       // Validate account number and IFSC
       if (!/^\d{9,18}$/.test(formData.accountNumber)) {
@@ -93,7 +127,8 @@ const ReversePennyDrop = () => {
           accountNumber: formData.accountNumber,
           ifsc: formData.ifsc,
           accountHolderName: formData.accountHolderName,
-          verifiedPan: verifiedPan
+          verifiedPan: verifiedPan,
+          flowTraceId: flowTraceId
         },
         redirectionConfig: {
           redirectUrl: formData.redirectUrl,
@@ -107,11 +142,40 @@ const ReversePennyDrop = () => {
       // Use our error parsing utility
       const parsedError = parseApiError(err);
       
-      // Check for Setu-specific error codes
-      const setuErrorCode = extractSetuErrorCode(err);
-      if (setuErrorCode) {
-        parsedError.message = getSetuErrorMessage(setuErrorCode);
-        parsedError.code = setuErrorCode;
+      // Check if the error response has the new format
+      if (err.response?.data && 
+          typeof err.response.data === 'object' && 
+          'status' in err.response.data && 
+          'message' in err.response.data && 
+          'trace_id' in err.response.data) {
+        
+        const errorResponse = err.response.data as ReversePennyDropErrorResponse;
+        
+        parsedError.message = errorResponse.message;
+        parsedError.code = errorResponse.status.toUpperCase();
+        
+        // Check for trace_id related errors
+        if (parsedError.message.toLowerCase().includes('trace_id')) {
+          parsedError.title = "Verification Flow Error";
+          parsedError.suggestion = "Please restart the verification process from the beginning.";
+          // Clear the session storage to force a restart of the flow
+          sessionStorage.removeItem('flowTraceId');
+        }
+      } else {
+        // Check for Setu-specific error codes for backward compatibility
+        const setuErrorCode = extractSetuErrorCode(err);
+        if (setuErrorCode) {
+          parsedError.message = getSetuErrorMessage(setuErrorCode);
+          parsedError.code = setuErrorCode;
+        }
+        
+        // Check for trace_id related errors
+        if (parsedError.message && parsedError.message.toLowerCase().includes('trace_id')) {
+          parsedError.title = "Verification Flow Error";
+          parsedError.suggestion = "Please restart the verification process from the beginning.";
+          // Clear the session storage to force a restart of the flow
+          sessionStorage.removeItem('flowTraceId');
+        }
       }
       
       setError(parsedError);
@@ -130,11 +194,33 @@ const ReversePennyDrop = () => {
       const response = await mockPayment(result.id, status)
       setMockStatus({
         success: response.success,
-        message: `Mock payment ${status} successfully simulated`
+        message: `Mock payment ${status ? 'success' : 'failure'} successfully simulated`
       })
     } catch (err: any) {
       // Use our error parsing utility for mock payment errors too
       const parsedError = parseApiError(err);
+      
+      // Check if the error response has the new format
+      if (err.response?.data && 
+          typeof err.response.data === 'object' && 
+          'status' in err.response.data && 
+          'message' in err.response.data && 
+          'trace_id' in err.response.data) {
+        
+        const errorResponse = err.response.data as ReversePennyDropErrorResponse;
+        
+        parsedError.message = errorResponse.message;
+        parsedError.code = errorResponse.status.toUpperCase();
+      } else {
+        // Check for trace_id related errors for backward compatibility
+        if (parsedError.message && parsedError.message.toLowerCase().includes('trace_id')) {
+          parsedError.title = "Verification Flow Error";
+          parsedError.suggestion = "Please restart the verification process from the beginning.";
+          // Clear the session storage to force a restart of the flow
+          sessionStorage.removeItem('flowTraceId');
+        }
+      }
+      
       setMockStatus({
         success: false,
         message: parsedError.message
@@ -157,17 +243,22 @@ const ReversePennyDrop = () => {
     setError(null);
   }
   
-  if (!panVerified) {
+  const handleRestartVerification = () => {
+    resetVerificationFlow()
+    navigate('/pan-verification')
+  }
+  
+  if (!panVerified || !flowTraceId) {
     return (
       <div className="max-w-3xl mx-auto">
         <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-lg">
-          <h3 className="text-xl font-semibold mb-4 text-yellow-800">PAN Verification Required</h3>
-          <p className="mb-4">You need to verify your PAN before proceeding to bank account verification.</p>
+          <h3 className="text-xl font-semibold mb-4 text-yellow-800">Verification Process Error</h3>
+          <p className="mb-4">There was an issue with your verification process. Please restart from the beginning.</p>
           <button
-            onClick={() => navigate('/pan-verification')}
+            onClick={handleRestartVerification}
             className="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition"
           >
-            Go to PAN Verification
+            Restart Verification Process
           </button>
         </div>
       </div>
@@ -289,13 +380,9 @@ const ReversePennyDrop = () => {
       
       {error && (
         <ErrorDisplay 
-          error={error.message}
-          title={error.title || 'Bank Account Verification Failed'}
-          errorCode={error.code}
-          variant="detailed"
+          error={error}
           onRetry={handleRetry}
           onDismiss={handleDismissError}
-          suggestion={error.suggestion}
         />
       )}
       

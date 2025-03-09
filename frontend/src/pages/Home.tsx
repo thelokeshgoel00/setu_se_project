@@ -1,6 +1,16 @@
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
+import { resetVerificationFlow } from '../utils/sessionUtils'
 
 const Home = () => {
+  const navigate = useNavigate()
+  
+  const handleStartVerification = (e: React.MouseEvent) => {
+    e.preventDefault()
+    // Reset verification flow before starting
+    resetVerificationFlow()
+    navigate('/pan-verification')
+  }
+  
   return (
     <div className="max-w-4xl mx-auto">
       <h1 className="text-3xl font-bold text-center mb-8">Welcome to Setu API Integration</h1>
@@ -19,12 +29,13 @@ const Home = () => {
           </li>
         </ol>
         <div className="mt-6">
-          <Link 
-            to="/pan-verification" 
+          <a 
+            href="#"
+            onClick={handleStartVerification}
             className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition text-center"
           >
             Start Verification Process
-          </Link>
+          </a>
         </div>
       </div>
       

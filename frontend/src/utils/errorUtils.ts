@@ -18,6 +18,16 @@ export const parseApiError = (error: any): ParsedError => {
   if (error.response) {
     const { status, data } = error.response;
     
+    // Check if the response has the new error format (status, message, trace_id)
+    if (data && typeof data === 'object' && 'status' in data && 'message' in data) {
+      return {
+        message: data.message,
+        code: data.status.toUpperCase(),
+        title: getErrorTitle(data.status),
+        suggestion: getSuggestionForStatus(data.status),
+      };
+    }
+    
     // Extract error message from response data
     const errorMessage = data?.detail || data?.message || data?.error || JSON.stringify(data);
     
@@ -168,4 +178,34 @@ export const getSetuErrorMessage = (errorCode: string): string => {
   };
   
   return errorMessages[errorCode] || 'An error occurred with the verification service.';
+};
+
+/**
+ * Get a user-friendly title based on the error status
+ */
+const getErrorTitle = (status: string): string => {
+  const statusMap: Record<string, string> = {
+    'failed': 'Verification Failed',
+    'error': 'System Error',
+    'not_found': 'Resource Not Found',
+    'connection_error': 'Connection Error',
+    'invalid_request': 'Invalid Request',
+  };
+  
+  return statusMap[status.toLowerCase()] || 'Error';
+};
+
+/**
+ * Get a suggestion based on the error status
+ */
+const getSuggestionForStatus = (status: string): string => {
+  const suggestionMap: Record<string, string> = {
+    'failed': 'Please check your information and try again.',
+    'error': 'This is not your fault. Please try again later or contact support.',
+    'not_found': 'Please check the information you provided and try again.',
+    'connection_error': 'Please check your internet connection and try again.',
+    'invalid_request': 'Please check your input and try again.',
+  };
+  
+  return suggestionMap[status.toLowerCase()] || 'Please try again or contact support.';
 }; 

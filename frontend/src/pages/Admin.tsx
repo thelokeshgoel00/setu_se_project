@@ -111,11 +111,14 @@ const Admin = () => {
           value={metrics.totalKycFailedDueToBankAccount} 
           bgColor="bg-purple-600" 
         />
+        
+        {/*
+        // THis metric makes no sense for now based on the flow.
         <MetricTile 
           title="Failed Due to Both" 
           value={metrics.totalKycFailedDueToBoth} 
           bgColor="bg-indigo-600" 
-        />
+        /> */}
       </div>
     </div>
   );

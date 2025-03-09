@@ -77,6 +77,16 @@ You can run the application using Docker, which packages everything needed to ru
    docker-compose down
    ```
 
+### Default Admin Credentials
+
+When running the application with Docker, a default admin user is automatically created with the following credentials:
+
+- **Username**: admin
+- **Email**: admin@example.com
+- **Password**: Admin@123
+
+You can use these credentials to log in to the admin interface. You can change the default from docker-entrypoint.sh file
+
 ### Building and Running Without Docker Compose
 
 If you prefer to use Docker directly without Docker Compose:

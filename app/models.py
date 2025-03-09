@@ -1,5 +1,65 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, EmailStr
 import re
+from typing import Optional
+from datetime import datetime
+from enum import Enum
+
+class UserRole(str, Enum):
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+
+class UserBase(BaseModel):
+    """Base user model with common attributes"""
+    username: str = Field(..., min_length=3, max_length=50)
+    email: EmailStr = Field(...)
+
+class UserCreate(UserBase):
+    """User creation model with password"""
+    password: str = Field(..., min_length=8)
+    
+    @validator('password')
+    def password_strength(cls, v):
+        """Validate password strength"""
+        if not re.search(r'[A-Z]', v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r'[a-z]', v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not re.search(r'[0-9]', v):
+            raise ValueError("Password must contain at least one digit")
+        return v
+
+class UserLogin(BaseModel):
+    """User login model"""
+    username: str
+    password: str
+
+class UserResponse(UserBase):
+    """User response model"""
+    id: int
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+    
+    class Config:
+        orm_mode = True
+        from_attributes = True
+        
+    @validator('role', pre=True)
+    def validate_role(cls, v):
+        """Convert SQLAlchemy enum to string"""
+        if hasattr(v, 'value'):
+            return v.value
+        return v
+
+class Token(BaseModel):
+    """Token response model"""
+    access_token: str
+    token_type: str = "bearer"
+
+class TokenData(BaseModel):
+    """Token data model for decoded JWT payload"""
+    username: Optional[str] = None
+    role: Optional[UserRole] = None
 
 class PANVerificationRequest(BaseModel):
     """
@@ -27,12 +87,12 @@ class PANData(BaseModel):
     """
     Model for PAN verification data
     """
-    aadhaar_seeding_status: str = Field(None, description="Aadhaar seeding status")
+    aadhaar_seeding_status: Optional[str] = Field(None, description="Aadhaar seeding status")
     category: str = Field(..., description="Category of PAN holder")
     full_name: str = Field(..., description="Full name of PAN holder")
-    first_name: str = Field(None, description="First name of PAN holder")
-    middle_name: str = Field(None, description="Middle name of PAN holder")
-    last_name: str = Field(None, description="Last name of PAN holder")
+    first_name: Optional[str] = Field(None, description="First name of PAN holder")
+    middle_name: Optional[str] = Field(None, description="Middle name of PAN holder")
+    last_name: Optional[str] = Field(None, description="Last name of PAN holder")
 
 class PANVerificationResponse(BaseModel):
     """
@@ -41,6 +101,14 @@ class PANVerificationResponse(BaseModel):
     status: str = Field(..., description="Status of verification")
     data: PANData = Field(..., description="PAN holder data")
     message: str = Field(..., description="Verification message")
+    trace_id: str = Field(..., description="Trace ID for the request")
+
+class PANVerificationErrorResponse(BaseModel):
+    """
+    Error response model for PAN verification
+    """
+    status: str = Field("failed", description="Status of verification")
+    message: str = Field(..., description="Error message")
     trace_id: str = Field(..., description="Trace ID for the request")
 
 # New models for Reverse Penny Drop
@@ -83,4 +151,12 @@ class MockPaymentResponse(BaseModel):
     Response model for mock payment
     """
     success: bool = Field(..., description="Whether the mock payment was successful")
+    trace_id: str = Field(..., description="Trace ID for the request")
+
+class ReversePennyDropErrorResponse(BaseModel):
+    """
+    Error response model for Reverse Penny Drop operations
+    """
+    status: str = Field("failed", description="Status of the operation")
+    message: str = Field(..., description="Error message")
     trace_id: str = Field(..., description="Trace ID for the request") 

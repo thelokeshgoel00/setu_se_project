@@ -1,9 +1,28 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
 import uuid
 from datetime import datetime
+import enum
+
+class UserRole(enum.Enum):
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+
+class User(Base):
+    """
+    SQLAlchemy model for user accounts
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True)
+    email = Column(String(100), unique=True, index=True)
+    hashed_password = Column(String(255))
+    role = Column(Enum(UserRole), default=UserRole.MEMBER)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
 
 class PANVerification(Base):
     """

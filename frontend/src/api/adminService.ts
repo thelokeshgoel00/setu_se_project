@@ -1,4 +1,5 @@
-import axios from 'axios';
+// Import the configured API instance from setuApi
+import { api } from './setuApi';
 
 export interface MetricsData {
   totalKycAttempted: number;
@@ -15,7 +16,8 @@ export interface MetricsData {
  */
 export const fetchAdminMetrics = async (): Promise<MetricsData> => {
   try {
-    const response = await axios.get('/api/admin/metrics');
+    // Use the configured API instance with auth interceptor
+    const response = await api.get('/admin/metrics');
     return response.data;
   } catch (error) {
     console.error('Error fetching admin metrics:', error);
@@ -29,7 +31,8 @@ export const fetchAdminMetrics = async (): Promise<MetricsData> => {
  */
 export const fetchPANVerificationHistory = async () => {
   try {
-    const response = await axios.get('/api/pan/history');
+    // Use the configured API instance with auth interceptor
+    const response = await api.get('/pan/history');
     return response.data;
   } catch (error) {
     console.error('Error fetching PAN verification history:', error);
@@ -43,7 +46,8 @@ export const fetchPANVerificationHistory = async () => {
  */
 export const fetchReversePennyDropHistory = async () => {
   try {
-    const response = await axios.get('/api/rpd/history');
+    // Use the configured API instance with auth interceptor
+    const response = await api.get('/rpd/history');
     return response.data;
   } catch (error) {
     console.error('Error fetching reverse penny drop history:', error);
@@ -57,7 +61,8 @@ export const fetchReversePennyDropHistory = async () => {
  */
 export const fetchPaymentHistory = async () => {
   try {
-    const response = await axios.get('/api/payments/history');
+    // Use the configured API instance with auth interceptor
+    const response = await api.get('/payments/history');
     return response.data;
   } catch (error) {
     console.error('Error fetching payment history:', error);

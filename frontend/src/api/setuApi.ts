@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { setupAuthInterceptor } from './authService';
 
 // Define types for API requests and responses
 export interface PANVerificationRequest {
@@ -23,6 +24,12 @@ export interface PANVerificationResponse {
   trace_id: string;
 }
 
+export interface PANVerificationErrorResponse {
+  status: string;
+  message: string;
+  trace_id: string;
+}
+
 export interface RedirectionConfig {
   redirectUrl: string;
   timeout: number;
@@ -43,14 +50,23 @@ export interface ReversePennyDropResponse {
   valid_upto: string;
 }
 
+export interface ReversePennyDropErrorResponse {
+  status: string;
+  message: string;
+  trace_id: string;
+}
+
 // Create axios instance with the correct base URL
 // In Docker, we need to use the absolute URL to the backend
-const api = axios.create({
+export const api = axios.create({
   baseURL: 'http://localhost:8000/api',
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+// Setup authentication interceptor
+setupAuthInterceptor(api);
 
 // Add request interceptor to handle errors
 api.interceptors.request.use(

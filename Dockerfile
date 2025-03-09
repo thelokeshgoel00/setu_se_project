@@ -36,6 +36,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code
 COPY app/ ./app/
+COPY create_admin.py .
 COPY .env.example ./.env
 
 # Copy built frontend from the frontend-build stage

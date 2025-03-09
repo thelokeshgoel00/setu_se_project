@@ -1,8 +1,9 @@
-import { useState, FormEvent } from 'react'
+import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { verifyPAN, PANVerificationRequest, PANVerificationResponse } from '../api/setuApi'
+import { verifyPAN, PANVerificationRequest, PANVerificationResponse, PANVerificationErrorResponse } from '../api/setuApi'
 import ErrorDisplay from '../components/ErrorDisplay'
 import { parseApiError, extractSetuErrorCode, getSetuErrorMessage } from '../utils/errorUtils'
+import { resetVerificationFlow } from '../utils/sessionUtils'
 
 const PANVerification = () => {
   const navigate = useNavigate()
@@ -21,6 +22,11 @@ const PANVerification = () => {
   } | null>(null)
   const [result, setResult] = useState<PANVerificationResponse | null>(null)
   
+  // Reset verification flow when component mounts
+  useEffect(() => {
+    resetVerificationFlow();
+  }, []);
+  
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target
     setFormData(prev => ({ ...prev, [name]: value }))
@@ -31,6 +37,9 @@ const PANVerification = () => {
     setLoading(true)
     setError(null)
     setResult(null)
+    
+    // Reset verification flow before starting a new verification
+    resetVerificationFlow();
     
     try {
       // Validate PAN format
@@ -50,15 +59,29 @@ const PANVerification = () => {
       // Store PAN verification result in session storage for the next step
       sessionStorage.setItem('panVerificationResult', JSON.stringify(response))
       sessionStorage.setItem('verifiedPAN', formData.pan)
+      sessionStorage.setItem('flowTraceId', response.trace_id)
     } catch (err: any) {
       // Use our error parsing utility
       const parsedError = parseApiError(err);
       
-      // Check for Setu-specific error codes
-      const setuErrorCode = extractSetuErrorCode(err);
-      if (setuErrorCode) {
-        parsedError.message = getSetuErrorMessage(setuErrorCode);
-        parsedError.code = setuErrorCode;
+      // Check if the error response has the new format
+      if (err.response?.data && 
+          typeof err.response.data === 'object' && 
+          'status' in err.response.data && 
+          'message' in err.response.data && 
+          'trace_id' in err.response.data) {
+        
+        const errorResponse = err.response.data as PANVerificationErrorResponse;
+        
+        parsedError.message = errorResponse.message;
+        parsedError.code = errorResponse.status.toUpperCase();
+      } else {
+        // Check for Setu-specific error codes for backward compatibility
+        const setuErrorCode = extractSetuErrorCode(err);
+        if (setuErrorCode) {
+          parsedError.message = getSetuErrorMessage(setuErrorCode);
+          parsedError.code = setuErrorCode;
+        }
       }
       
       setError(parsedError);
@@ -158,10 +181,7 @@ const PANVerification = () => {
       
       {error && (
         <ErrorDisplay 
-          error={error.message}
-          title={error.title || 'PAN Verification Failed'}
-          errorCode={error.code}
-          variant="detailed"
+          error={error}
           onRetry={handleRetry}
           onDismiss={handleDismissError}
         />

@@ -1,19 +1,28 @@
-from fastapi import FastAPI, HTTPException, Depends
-
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from dotenv import load_dotenv
+from datetime import timedelta
 from .models import (
     PANVerificationRequest, PANVerificationResponse,
     ReversePennyDropRequest, ReversePennyDropResponse,
-    MockPaymentRequest, MockPaymentResponse
+    MockPaymentRequest, MockPaymentResponse,
+    UserCreate, UserResponse, Token, UserRole,
+    PANVerificationErrorResponse, ReversePennyDropErrorResponse
 )
 from .config import get_settings
 from .database import engine, get_db
-from .db_models import Base, PANVerification, ReversePennyDrop, Payment
+from .db_models import Base, PANVerification, ReversePennyDrop, Payment, User
+from .auth import (
+    get_password_hash, authenticate_user, create_access_token,
+    get_current_active_user, get_admin_user, get_member_user,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
 from sqlalchemy.orm import Session
-import json
 import uuid
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 # Load environment variables
 load_dotenv()
 
@@ -41,8 +50,69 @@ async def root():
     """Root endpoint that returns a welcome message."""
     return {"message": "Welcome to Setu API Integration. Visit /docs for API documentation."}
 
-@app.post("/api/pan/verify", response_model=PANVerificationResponse)
-async def verify_pan(request: PANVerificationRequest, settings=Depends(get_settings), db: Session = Depends(get_db)):
+# Authentication endpoints
+@app.post("/api/auth/register", response_model=UserResponse)
+async def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user
+    """
+    # Check if username already exists
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    # Check if email already exists
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        username=user.username,
+        email=user.email,
+        hashed_password=hashed_password,
+        role=UserRole.MEMBER  # Default role is member
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/api/auth/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """
+    Get access token using username and password
+    """
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "role": user.role.value},
+        expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """
+    Get current user information
+    """
+    return current_user
+
+# Protected PAN verification endpoint (members only)
+@app.post("/api/pan/verify", response_model=PANVerificationResponse, responses={400: {"model": PANVerificationErrorResponse}, 404: {"model": PANVerificationErrorResponse}, 500: {"model": PANVerificationErrorResponse}})
+async def verify_pan(
+    request: PANVerificationRequest, 
+    current_user: User = Depends(get_member_user),
+    settings=Depends(get_settings), 
+    db: Session = Depends(get_db)
+):
     """
     Verify a PAN number using Setu API.
     
@@ -54,11 +124,32 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
         print(request)
         # Validate consent
         if request.consent.upper() != "Y":
-            raise HTTPException(status_code=400, detail="Consent must be 'Y' to proceed with verification")
+            # Return a custom error response
+            error_response = PANVerificationErrorResponse(
+                status="failed",
+                message="Consent must be 'Y' to proceed with verification",
+                trace_id=f"error_{uuid.uuid4()}"
+            )
+            return JSONResponse(
+                status_code=400,
+                content=jsonable_encoder(error_response)
+            )
         
         # Validate reason length
         if len(request.reason) < 20:
-            raise HTTPException(status_code=400, detail="Reason must be at least 20 characters long")
+            # Return a custom error response
+            error_response = PANVerificationErrorResponse(
+                status="failed",
+                message="Reason must be at least 20 characters long",
+                trace_id=f"error_{uuid.uuid4()}"
+            )
+            return JSONResponse(
+                status_code=400,
+                content=jsonable_encoder(error_response)
+            )
+        
+        # Generate a unique trace_id for this verification flow
+        flow_trace_id = f"flow_{uuid.uuid4()}"
         
         # Prepare request to Setu API
         url = f"{settings.setu_base_url}/api/verify/pan"
@@ -71,7 +162,8 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
         payload = {
             "pan": request.pan,
             "consent": request.consent,
-            "reason": request.reason
+            "reason": request.reason,
+            "traceId": flow_trace_id  # Include our generated trace_id in the request
         }
         
         # Make request to Setu API
@@ -80,9 +172,63 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                 response = await client.post(url, json=payload, headers=headers)
                 response_data = response.json()
                 print(response_data)
+                
+                # Check if verification failed even with 200 status code
+                if response.status_code == 200 and response_data.get("verification") == "failed":
+                    # Store failed verification
+                    try:
+                        db_verification = PANVerification(
+                            pan=request.pan,
+                            full_name="",
+                            category="",
+                            status="failed",
+                            message="PAN Verification Failed: " + response_data.get("message", "PAN not found"),
+                            trace_id=flow_trace_id
+                        )
+                        db.add(db_verification)
+                        db.commit()
+                    except Exception as db_error:
+                        print(f"Error storing failed PAN verification: {str(db_error)}")
+                    
+                    # Return a custom error response
+                    error_response = PANVerificationErrorResponse(
+                        status="failed",
+                        message="PAN Verification Failed: " + response_data.get("message", "The provided PAN number was not found"),
+                        trace_id=flow_trace_id
+                    )
+                    return JSONResponse(
+                        status_code=404,
+                        content=jsonable_encoder(error_response)
+                    )
+                
                 # Handle different response statuses
                 if response.status_code == 200:
                     try:
+                        # Check if all required fields are present in the response
+                        if not response_data.get("data", {}).get("fullName") and not response_data.get("data", {}).get("full_name"):
+                            # Store failed verification
+                            db_verification = PANVerification(
+                                pan=request.pan,
+                                full_name="",
+                                category="",
+                                status="failed",
+                                message="PAN Verification Failed: Missing required data in response",
+                                trace_id=flow_trace_id
+                            )
+                            db.add(db_verification)
+                            db.commit()
+                            
+                            # Return a custom error response
+                            error_response = PANVerificationErrorResponse(
+                                status="failed",
+                                message="PAN Verification Failed: The provided PAN information could not be verified",
+                                trace_id=flow_trace_id
+                            )
+                            return JSONResponse(
+                                status_code=400,
+                                content=jsonable_encoder(error_response)
+                            )
+                        
                         # Transform camelCase to snake_case for response
                         transformed_data = {
                             "status": "success",
@@ -100,7 +246,7 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                                                                              response_data.get("data", {}).get("last_name"))
                             },
                             "message": response_data.get("message", "PAN verification completed"),
-                            "trace_id": response_data.get("traceId", response_data.get("trace_id", ""))
+                            "trace_id": flow_trace_id  # Use our generated trace_id instead of the one from the response
                         }
                         
                         # Store the verification result in the database
@@ -114,14 +260,28 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                             last_name=transformed_data["data"]["last_name"],
                             status=transformed_data["status"],
                             message=transformed_data["message"],
-                            trace_id=transformed_data["trace_id"]
+                            trace_id=flow_trace_id
                         )
                         db.add(db_verification)
                         db.commit()
+                    except HTTPException:
+                        # Re-raise HTTP exceptions
+                        raise
                     except Exception as db_error:
                         # Log the error but don't fail the request
                         print(f"Error storing PAN verification in database: {str(db_error)}")
                         print(f"Response data: {response_data}")
+                        
+                        # If we can't store in the database, still return a proper error
+                        error_response = PANVerificationErrorResponse(
+                            status="error",
+                            message="PAN Verification Failed: Error processing verification result",
+                            trace_id=flow_trace_id
+                        )
+                        return JSONResponse(
+                            status_code=500,
+                            content=jsonable_encoder(error_response)
+                        )
                     
                     # Return the transformed data to match the response model
                     return transformed_data
@@ -133,15 +293,24 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                             full_name="",
                             category="",
                             status="failed",
-                            message=response_data.get("message", "Bad request"),
-                            trace_id=response_data.get("trace_id", response_data.get("traceId", ""))
+                            message="PAN Verification Failed: " + response_data.get("message", "Bad request"),
+                            trace_id=flow_trace_id
                         )
                         db.add(db_verification)
                         db.commit()
                     except Exception as db_error:
                         print(f"Error storing failed PAN verification: {str(db_error)}")
                     
-                    raise HTTPException(status_code=400, detail=response_data.get("message", "Bad request"))
+                    # Return a custom error response
+                    error_response = PANVerificationErrorResponse(
+                        status="failed",
+                        message="PAN Verification Failed: " + response_data.get("message", "The provided PAN information could not be verified"),
+                        trace_id=flow_trace_id
+                    )
+                    return JSONResponse(
+                        status_code=400,
+                        content=jsonable_encoder(error_response)
+                    )
                 elif response.status_code == 404:
                     # Store not found verification
                     try:
@@ -150,15 +319,24 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                             full_name="",
                             category="",
                             status="not_found",
-                            message=response_data.get("message", "PAN not found"),
-                            trace_id=response_data.get("trace_id", response_data.get("traceId", ""))
+                            message="PAN Verification Failed: " + response_data.get("message", "PAN not found"),
+                            trace_id=flow_trace_id
                         )
                         db.add(db_verification)
                         db.commit()
                     except Exception as db_error:
                         print(f"Error storing not found PAN verification: {str(db_error)}")
                     
-                    raise HTTPException(status_code=404, detail=response_data.get("message", "PAN not found"))
+                    # Return a custom error response
+                    error_response = PANVerificationErrorResponse(
+                        status="not_found",
+                        message="PAN Verification Failed: " + response_data.get("message", "The provided PAN number was not found"),
+                        trace_id=flow_trace_id
+                    )
+                    return JSONResponse(
+                        status_code=404,
+                        content=jsonable_encoder(error_response)
+                    )
                 else:
                     # Store error verification
                     try:
@@ -167,15 +345,24 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                             full_name="",
                             category="",
                             status="error",
-                            message="Error from Setu API",
-                            trace_id=response_data.get("trace_id", response_data.get("traceId", ""))
+                            message="PAN Verification Failed: Error from Setu API",
+                            trace_id=flow_trace_id
                         )
                         db.add(db_verification)
                         db.commit()
                     except Exception as db_error:
                         print(f"Error storing error PAN verification: {str(db_error)}")
                     
-                    raise HTTPException(status_code=response.status_code, detail="Error from Setu API")
+                    # Return a custom error response
+                    error_response = PANVerificationErrorResponse(
+                        status="error",
+                        message="PAN Verification Failed: Error from verification service",
+                        trace_id=flow_trace_id
+                    )
+                    return JSONResponse(
+                        status_code=response.status_code,
+                        content=jsonable_encoder(error_response)
+                    )
             except httpx.RequestError as e:
                 # Store connection error verification
                 try:
@@ -184,20 +371,56 @@ async def verify_pan(request: PANVerificationRequest, settings=Depends(get_setti
                         full_name="",
                         category="",
                         status="connection_error",
-                        message=f"Error communicating with Setu API: {str(e)}",
-                        trace_id=""
+                        message=f"PAN Verification Failed: Error communicating with Setu API: {str(e)}",
+                        trace_id=flow_trace_id
                     )
                     db.add(db_verification)
                     db.commit()
                 except Exception as db_error:
                     print(f"Error storing connection error PAN verification: {str(db_error)}")
                 
-                raise HTTPException(status_code=500, detail=f"Error communicating with Setu API: {str(e)}")
+                # Return a custom error response
+                error_response = PANVerificationErrorResponse(
+                    status="connection_error",
+                    message="PAN Verification Failed: Error communicating with verification service",
+                    trace_id=flow_trace_id
+                )
+                return JSONResponse(
+                    status_code=500,
+                    content=jsonable_encoder(error_response)
+                )
+    except HTTPException:
+        # Re-raise HTTP exceptions without modification
+        raise
     except Exception as e:
+        # Store unexpected error verification
+        try:
+            db_verification = PANVerification(
+                pan=request.pan,
+                full_name="",
+                category="",
+                status="error",
+                message=f"PAN Verification Failed: Unexpected error: {str(e)}",
+                trace_id=flow_trace_id if 'flow_trace_id' in locals() else f"error_{uuid.uuid4()}"
+            )
+            db.add(db_verification)
+            db.commit()
+        except Exception as db_error:
+            print(f"Error storing unexpected error PAN verification: {str(db_error)}")
+        
         print(f"Unexpected error in verify_pan: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        # Return a custom error response
+        error_response = PANVerificationErrorResponse(
+            status="error",
+            message="PAN Verification Failed: An unexpected error occurred during verification",
+            trace_id=flow_trace_id if 'flow_trace_id' in locals() else f"error_{uuid.uuid4()}"
+        )
+        return JSONResponse(
+            status_code=500,
+            content=jsonable_encoder(error_response)
+        )
 
-@app.post("/api/rpd/create_request", response_model=ReversePennyDropResponse)
+@app.post("/api/rpd/create_request", response_model=ReversePennyDropResponse, responses={400: {"model": ReversePennyDropErrorResponse}, 404: {"model": ReversePennyDropErrorResponse}, 500: {"model": ReversePennyDropErrorResponse}})
 async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=Depends(get_settings), db: Session = Depends(get_db)):
     """
     Create a reverse penny drop request using Setu API.
@@ -209,6 +432,24 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
     - **redirection_config**: Optional configuration for redirect behavior after transaction
     """
     print("request",request)
+    
+    # Extract the flow trace_id from the request if available
+    flow_trace_id = None
+    if request.additionalData and "flowTraceId" in request.additionalData:
+        flow_trace_id = request.additionalData["flowTraceId"]
+    
+    # Validate that a trace_id is provided
+    if not flow_trace_id:
+        error_response = ReversePennyDropErrorResponse(
+            status="failed",
+            message="Missing trace_id for the verification flow. Please complete PAN verification first.",
+            trace_id=f"error_{uuid.uuid4()}"
+        )
+        return JSONResponse(
+            status_code=400,
+            content=jsonable_encoder(error_response)
+        )
+    
     # Prepare request to Setu API
     url = f"{settings.setu_base_url}/api/verify/ban/reverse"
     headers = {
@@ -221,12 +462,18 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
     # Prepare payload
     payload = {}
     # if request.additionalData:
-    #     payload["additionalData"] = request.additionalData
+    #     # Create a copy of additionalData without our custom flowTraceId
+    #     additional_data = {k: v for k, v in request.additionalData.items() if k != "flowTraceId"}
+    #     payload["additionalData"] = additional_data
     # if request.redirectionConfig:
     #     payload["redirectionConfig"] = {
     #         "redirectURL": request.redirectionConfig.redirectUrl,
     #         "timeout": request.redirectionConfig.timeout
     #     }
+    
+    # Add our trace_id to the payload if available
+    if flow_trace_id:
+        payload["traceId"] = flow_trace_id
     
     # Make request to Setu API
     print(payload, url, headers)
@@ -243,7 +490,7 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
                         "id": response_data.get("id", ""),
                         "short_url": response_data.get("shortURL", response_data.get("shortUrl", "")),
                         "status": response_data.get("status", ""),
-                        "trace_id": response_data.get("traceId", response_data.get("trace_id", "")),
+                        "trace_id": flow_trace_id if flow_trace_id else response_data.get("traceId", response_data.get("trace_id", "")),
                         "upi_bill_id": response_data.get("upiBillID", response_data.get("upiBillId", "")),
                         "upi_link": response_data.get("upiLink", ""),
                         "valid_upto": response_data.get("validUpto", "")
@@ -276,7 +523,7 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
                         id=response_data.get("id", f"error_{uuid.uuid4()}"),
                         short_url="",
                         status="ERROR",
-                        trace_id=response_data.get("trace_id", ""),
+                        trace_id=flow_trace_id if flow_trace_id else response_data.get("trace_id", ""),
                         upi_bill_id="",
                         upi_link="",
                         valid_upto=""
@@ -287,7 +534,15 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
                     print(f"Error storing failed reverse penny drop: {str(db_error)}")
                 
                 error_message = response_data.get("error", {}).get("message", "Error from Setu API")
-                raise HTTPException(status_code=response.status_code, detail=error_message)
+                error_response = ReversePennyDropErrorResponse(
+                    status="failed",
+                    message=f"Reverse Penny Drop Failed: {error_message}",
+                    trace_id=flow_trace_id if flow_trace_id else f"error_{uuid.uuid4()}"
+                )
+                return JSONResponse(
+                    status_code=response.status_code,
+                    content=jsonable_encoder(error_response)
+                )
                 
         except httpx.RequestError as e:
             # Try to store the connection error
@@ -296,7 +551,7 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
                     id=f"connection_error_{uuid.uuid4()}",
                     short_url="",
                     status="CONNECTION_ERROR",
-                    trace_id="",
+                    trace_id=flow_trace_id if flow_trace_id else "",
                     upi_bill_id="",
                     upi_link="",
                     valid_upto=""
@@ -306,26 +561,65 @@ async def create_reverse_penny_drop(request: ReversePennyDropRequest, settings=D
             except Exception as db_error:
                 print(f"Error storing connection error reverse penny drop: {str(db_error)}")
             
-            raise HTTPException(status_code=500, detail=f"Error communicating with Setu API: {str(e)}")
+            error_response = ReversePennyDropErrorResponse(
+                status="connection_error",
+                message=f"Reverse Penny Drop Failed: Error communicating with verification service",
+                trace_id=flow_trace_id if flow_trace_id else f"error_{uuid.uuid4()}"
+            )
+            return JSONResponse(
+                status_code=500,
+                content=jsonable_encoder(error_response)
+            )
         except Exception as e:
             print(f"Unexpected error in create_reverse_penny_drop: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+            error_response = ReversePennyDropErrorResponse(
+                status="error",
+                message=f"Reverse Penny Drop Failed: An unexpected error occurred",
+                trace_id=flow_trace_id if flow_trace_id else f"error_{uuid.uuid4()}"
+            )
+            return JSONResponse(
+                status_code=500,
+                content=jsonable_encoder(error_response)
+            )
 
-@app.post("/api/rpd/mock-payment", response_model=MockPaymentResponse)
+@app.post("/api/rpd/mock-payment", response_model=MockPaymentResponse, responses={400: {"model": ReversePennyDropErrorResponse}, 404: {"model": ReversePennyDropErrorResponse}, 500: {"model": ReversePennyDropErrorResponse}})
 async def mock_payment(request: MockPaymentRequest, settings=Depends(get_settings), db: Session = Depends(get_db)):
     """
     Mock a payment for a reverse penny drop request (sandbox only).
     
-    This endpoint is only available in the sandbox environment and allows you to simulate
-    a payment for testing purposes.
+    This endpoint simulates a payment for a reverse penny drop request.
+    It's used for testing the flow without making actual payments.
     
     - **request_id**: ID of the reverse penny drop request
-    - **payment_status**: Status of the payment (successful or expired)
+    - **payment_status**: Whether the payment was successful (default: True)
     """
-    print(request)
-    # Ensure we're in sandbox mode
-    if "sandbox" not in settings.setu_base_url:
-        raise HTTPException(status_code=400, detail="Mock payments are only available in sandbox mode")
+    # Get the RPD record to retrieve the trace_id
+    rpd = db.query(ReversePennyDrop).filter(ReversePennyDrop.id == request.request_id).first()
+    if not rpd:
+        error_response = ReversePennyDropErrorResponse(
+            status="not_found",
+            message="Reverse penny drop request not found. Please check the request ID and try again.",
+            trace_id=f"error_{uuid.uuid4()}"
+        )
+        return JSONResponse(
+            status_code=404,
+            content=jsonable_encoder(error_response)
+        )
+    
+    # Use the same trace_id from the RPD record
+    flow_trace_id = rpd.trace_id
+    
+    # Validate that the RPD record has a valid trace_id
+    if not flow_trace_id:
+        error_response = ReversePennyDropErrorResponse(
+            status="invalid_request",
+            message="Invalid verification flow. Missing trace_id in the reverse penny drop record.",
+            trace_id=f"error_{uuid.uuid4()}"
+        )
+        return JSONResponse(
+            status_code=400,
+            content=jsonable_encoder(error_response)
+        )
     
     # Prepare request to Setu API
     url = f"{settings.setu_base_url}/api/verify/ban/reverse/mock_payment/{request.request_id}"
@@ -335,9 +629,12 @@ async def mock_payment(request: MockPaymentRequest, settings=Depends(get_setting
         "x-product-instance-id": settings.setu_product_instance_rpd_id,
         "Content-Type": "application/json"
     }
-    payment_status = "successful" if request.payment_status else "expired"
+    
+    # Prepare payload
     payload = {
-        "paymentStatus": payment_status
+        "requestId": request.request_id,
+        "status": "SUCCESS" if request.payment_status else "FAILURE",
+        "traceId": flow_trace_id  # Use the same trace_id
     }
     
     # Make request to Setu API
@@ -352,14 +649,14 @@ async def mock_payment(request: MockPaymentRequest, settings=Depends(get_setting
                     # Transform camelCase to snake_case for response
                     transformed_data = {
                         "success": response_data.get("success", True),
-                        "trace_id": response_data.get("traceId", response_data.get("trace_id", ""))
+                        "trace_id": flow_trace_id  # Use the same trace_id
                     }
                     
                     # Store the payment in the database
                     db_payment = Payment(
                         request_id=request.request_id,
                         payment_status=request.payment_status,
-                        trace_id=transformed_data["trace_id"]
+                        trace_id=flow_trace_id  # Use the same trace_id
                     )
                     db.add(db_payment)
                     db.commit()
@@ -389,7 +686,15 @@ async def mock_payment(request: MockPaymentRequest, settings=Depends(get_setting
                     print(f"Error storing failed payment: {str(db_error)}")
                 
                 error_message = response_data.get("error", {}).get("message", "Error from Setu API")
-                raise HTTPException(status_code=response.status_code, detail=error_message)
+                error_response = ReversePennyDropErrorResponse(
+                    status="failed",
+                    message=f"Payment Failed: {error_message}",
+                    trace_id=flow_trace_id
+                )
+                return JSONResponse(
+                    status_code=response.status_code,
+                    content=jsonable_encoder(error_response)
+                )
         except httpx.RequestError as e:
             # Try to store the connection error
             try:
@@ -403,10 +708,26 @@ async def mock_payment(request: MockPaymentRequest, settings=Depends(get_setting
             except Exception as db_error:
                 print(f"Error storing connection error payment: {str(db_error)}")
             
-            raise HTTPException(status_code=500, detail=f"Error communicating with Setu API: {str(e)}")
+            error_response = ReversePennyDropErrorResponse(
+                status="connection_error",
+                message="Payment Failed: Error communicating with verification service",
+                trace_id=flow_trace_id
+            )
+            return JSONResponse(
+                status_code=500,
+                content=jsonable_encoder(error_response)
+            )
         except Exception as e:
             print(f"Unexpected error in mock_payment: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+            error_response = ReversePennyDropErrorResponse(
+                status="error",
+                message="Payment Failed: An unexpected error occurred",
+                trace_id=flow_trace_id
+            )
+            return JSONResponse(
+                status_code=500,
+                content=jsonable_encoder(error_response)
+            )
 
 # Add new endpoints for database queries
 
@@ -435,59 +756,74 @@ async def get_payment_history(db: Session = Depends(get_db)):
     return payments
 
 @app.get("/api/admin/metrics")
-async def get_admin_metrics(db: Session = Depends(get_db)):
+async def get_admin_metrics(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
     """
-    Get admin metrics for the dashboard
+    Get admin metrics (admin only)
     """
     try:
         # Get total KYC attempted (PAN verifications)
         total_kyc_attempted = db.query(PANVerification).count()
         
-        # Get total KYC successful (PAN verifications with status 'success')
-        total_kyc_successful = db.query(PANVerification).filter(PANVerification.status == "success").count()
+        # Get successful PAN verifications
+        successful_pan_verifications = db.query(PANVerification).filter(
+            PANVerification.status == "success"
+        ).all()
+        
+        # Get successful RPD attempts
+        successful_rpd_attempts = db.query(ReversePennyDrop).filter(
+            ReversePennyDrop.status == "SUCCESS" or ReversePennyDrop.status == "BAV_REVERSE_PENNY_DROP_CREATED"
+        ).all()
+
+        # Create sets of trace_ids for successful verifications
+        successful_pan_trace_ids = {pan.trace_id for pan in successful_pan_verifications if pan.trace_id}
+        successful_rpd_trace_ids = {rpd.trace_id for rpd in successful_rpd_attempts if rpd.trace_id}
+
+        print(successful_pan_trace_ids)
+        print(successful_rpd_trace_ids)
+        
+        # Calculate total KYC successful (both PAN and RPD successful)
+        # Find the intersection of trace_ids that appear in both successful PAN and RPD
+        successful_both_trace_ids = successful_pan_trace_ids.intersection(successful_rpd_trace_ids)
+        total_kyc_successful = len(successful_both_trace_ids)
         
         # Get total KYC failed
         total_kyc_failed = total_kyc_attempted - total_kyc_successful
         
         # Get total KYC failed due to PAN
-        # This is a simplification - in a real app, you'd have more detailed failure reasons
-        total_kyc_failed_due_to_pan = db.query(PANVerification).filter(
+        # This includes cases where PAN failed but RPD might have succeeded or not been attempted
+        failed_pan_verifications = db.query(PANVerification).filter(
             PANVerification.status != "success"
-        ).count()
+        ).all()
+        failed_pan_trace_ids = {pan.trace_id for pan in failed_pan_verifications if pan.trace_id}
+        total_kyc_failed_due_to_pan = len(failed_pan_trace_ids)
         
         # For bank account failures, we'll use the reverse penny drop data
         # Get total RPD attempts
         total_rpd_attempted = db.query(ReversePennyDrop).count()
         
-        # Get total RPD successful
-        total_rpd_successful = db.query(ReversePennyDrop).filter(
-            ReversePennyDrop.status == "SUCCESS"
-        ).count()
-        
         # Get total RPD failed
-        total_rpd_failed = total_rpd_attempted - total_rpd_successful
+        failed_rpd_attempts = db.query(ReversePennyDrop).filter(
+            ReversePennyDrop.status != "SUCCESS"
+        ).all()
+        failed_rpd_trace_ids = {rpd.trace_id for rpd in failed_rpd_attempts if rpd.trace_id}
+        total_rpd_failed = len(failed_rpd_trace_ids)
         
-        # For simplification, we'll assume:
-        # - If only PAN failed, it's counted in total_kyc_failed_due_to_pan
-        # - If only Bank Account failed, it's counted in total_rpd_failed
-        # - If both failed, we'll estimate based on the data
+        # Calculate KYC failed due to bank account
+        # This includes cases where RPD failed but PAN succeeded
+        total_kyc_failed_due_to_bank = len(failed_rpd_trace_ids.intersection(successful_pan_trace_ids))
         
-        # This is a simplified calculation - in a real app, you'd track these metrics more precisely
-        total_kyc_failed_due_to_bank = total_rpd_failed
-        
-        # Estimate failures due to both - this is just an example approach
-        # In a real app, you'd track this explicitly
-        total_kyc_failed_due_to_both = min(total_kyc_failed_due_to_pan, total_kyc_failed_due_to_bank) // 2
-        
-        # Adjust individual failure counts to account for the "both" category
-        total_kyc_failed_due_to_pan -= total_kyc_failed_due_to_both
-        total_kyc_failed_due_to_bank -= total_kyc_failed_due_to_both
+        # Calculate KYC failed due to both
+        # This includes cases where both PAN and RPD failed
+        total_kyc_failed_due_to_both = len(failed_pan_trace_ids.intersection(failed_rpd_trace_ids))
         
         return {
             "totalKycAttempted": total_kyc_attempted,
             "totalKycSuccessful": total_kyc_successful,
             "totalKycFailed": total_kyc_failed,
-            "totalKycFailedDueToPan": total_kyc_failed_due_to_pan,
+            "totalKycFailedDueToPan": total_kyc_failed_due_to_pan - total_kyc_failed_due_to_both,
             "totalKycFailedDueToBankAccount": total_kyc_failed_due_to_bank,
             "totalKycFailedDueToBoth": total_kyc_failed_due_to_both
         }

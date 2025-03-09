@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Create default admin user
+echo "Creating default admin user..."
+cd /app
+python -c "from create_admin import create_admin_user; create_admin_user('admin', 'admin@example.com', 'Admin@123')"
+
 # Start the backend server
 echo "Starting backend server..."
 cd /app
