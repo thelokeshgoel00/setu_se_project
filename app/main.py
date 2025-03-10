@@ -774,7 +774,7 @@ async def get_admin_metrics(
         
         # Get successful RPD attempts
         successful_rpd_attempts = db.query(ReversePennyDrop).filter(
-            ReversePennyDrop.status == "SUCCESS" or ReversePennyDrop.status == "BAV_REVERSE_PENNY_DROP_CREATED"
+            (ReversePennyDrop.status == "SUCCESS") | (ReversePennyDrop.status == "BAV_REVERSE_PENNY_DROP_CREATED")
         ).all()
 
         # Create sets of trace_ids for successful verifications
@@ -799,17 +799,13 @@ async def get_admin_metrics(
         ).all()
         failed_pan_trace_ids = {pan.trace_id for pan in failed_pan_verifications if pan.trace_id}
         total_kyc_failed_due_to_pan = len(failed_pan_trace_ids)
-        
-        # For bank account failures, we'll use the reverse penny drop data
-        # Get total RPD attempts
-        total_rpd_attempted = db.query(ReversePennyDrop).count()
+    
         
         # Get total RPD failed
         failed_rpd_attempts = db.query(ReversePennyDrop).filter(
             ReversePennyDrop.status != "SUCCESS"
         ).all()
         failed_rpd_trace_ids = {rpd.trace_id for rpd in failed_rpd_attempts if rpd.trace_id}
-        total_rpd_failed = len(failed_rpd_trace_ids)
         
         # Calculate KYC failed due to bank account
         # This includes cases where RPD failed but PAN succeeded
@@ -819,13 +815,23 @@ async def get_admin_metrics(
         # This includes cases where both PAN and RPD failed
         total_kyc_failed_due_to_both = len(failed_pan_trace_ids.intersection(failed_rpd_trace_ids))
         
+        # Get all RPD attempts (both successful and failed)
+        all_rpd_attempts = db.query(ReversePennyDrop).all()
+        all_rpd_trace_ids = {rpd.trace_id for rpd in all_rpd_attempts if rpd.trace_id}
+        
+        # Calculate PAN verifications without RPD entries
+        # This includes cases where PAN succeeded but no RPD was attempted
+        pan_without_rpd = successful_pan_trace_ids.difference(all_rpd_trace_ids)
+        total_pan_without_rpd = len(pan_without_rpd)
+        
         return {
             "totalKycAttempted": total_kyc_attempted,
             "totalKycSuccessful": total_kyc_successful,
             "totalKycFailed": total_kyc_failed,
             "totalKycFailedDueToPan": total_kyc_failed_due_to_pan - total_kyc_failed_due_to_both,
             "totalKycFailedDueToBankAccount": total_kyc_failed_due_to_bank,
-            "totalKycFailedDueToBoth": total_kyc_failed_due_to_both
+            "totalKycFailedDueToBoth": total_kyc_failed_due_to_both,
+            "totalPanWithoutRpd": total_pan_without_rpd
         }
     except Exception as e:
         # Log the error
@@ -837,5 +843,6 @@ async def get_admin_metrics(
             "totalKycFailed": 0,
             "totalKycFailedDueToPan": 0,
             "totalKycFailedDueToBankAccount": 0,
-            "totalKycFailedDueToBoth": 0
+            "totalKycFailedDueToBoth": 0,
+            "totalPanWithoutRpd": 0
         }

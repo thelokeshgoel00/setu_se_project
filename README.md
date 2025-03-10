@@ -203,14 +203,7 @@ The application uses SQLite as the default database. All API requests and respon
 - **PANVerification**: Stores PAN verification requests and responses
 - **ReversePennyDrop**: Stores reverse penny drop requests
 - **Payment**: Stores payment records related to reverse penny drops
-
-### Database Endpoints
-
-The following endpoints are available to query the database:
-
-- `GET /api/pan/history`: Get history of PAN verifications
-- `GET /api/rpd/history`: Get history of reverse penny drop requests
-- `GET /api/payments/history`: Get history of payments
+- **Users**: Stores Users Details for Authentication and Authorization
 
 ### Custom Database Configuration
 

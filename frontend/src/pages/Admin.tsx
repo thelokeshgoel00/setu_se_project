@@ -16,6 +16,7 @@ const Admin = () => {
     totalKycFailedDueToPan: 0,
     totalKycFailedDueToBankAccount: 0,
     totalKycFailedDueToBoth: 0,
+    totalPanWithoutRpd: 0,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +112,11 @@ const Admin = () => {
           value={metrics.totalKycFailedDueToBankAccount} 
           bgColor="bg-purple-600" 
         />
-        
+        <MetricTile 
+          title="PAN without Bank Verification" 
+          value={metrics.totalPanWithoutRpd} 
+          bgColor="bg-indigo-600" 
+        />
         {/*
         // THis metric makes no sense for now based on the flow.
         <MetricTile 

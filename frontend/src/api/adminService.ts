@@ -8,6 +8,7 @@ export interface MetricsData {
   totalKycFailedDueToPan: number;
   totalKycFailedDueToBankAccount: number;
   totalKycFailedDueToBoth: number;
+  totalPanWithoutRpd: number;
 }
 
 /**
